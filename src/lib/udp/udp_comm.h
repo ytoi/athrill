@@ -20,5 +20,6 @@ extern Std_ReturnType udp_comm_read(UdpCommType *comm);
 extern Std_ReturnType udp_comm_write(UdpCommType *comm);
 extern Std_ReturnType udp_comm_remote_write(UdpCommType *comm, const char *remote_ipaddr);
 extern void udp_server_delete(UdpCommType *comm);
+extern Std_ReturnType udp_comm_read_with_timeout(UdpCommType *comm, struct timeval *timeout);
 
 #endif /* _UDP_SERVER_H_ */

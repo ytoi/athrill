@@ -59,6 +59,29 @@ Std_ReturnType udp_comm_read(UdpCommType *comm)
 	return STD_E_OK;
 }
 
+Std_ReturnType udp_comm_read_with_timeout(UdpCommType *comm, struct timeval *timeout)
+{
+	int err;
+
+	fd_set fdset;
+	FD_ZERO(&fdset);
+	FD_SET(comm->srv_sock,&fdset);
+
+	err = select(1, &fdset, 0, 0, timeout);
+
+	if ( err == -1 ) {
+		// error
+		return STD_E_INVALID;
+	} else if ( err ) {
+		// read success
+		return udp_comm_read(comm);
+	} else {
+		// timeout occured
+		return STD_E_TIMEOUT;
+	}
+
+}
+
 Std_ReturnType udp_comm_write(UdpCommType *comm)
 {
 	int err;
