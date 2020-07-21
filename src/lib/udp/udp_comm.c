@@ -67,7 +67,7 @@ Std_ReturnType udp_comm_read_with_timeout(UdpCommType *comm, struct timeval *tim
 	FD_ZERO(&fdset);
 	FD_SET(comm->srv_sock,&fdset);
 
-	err = select(1, &fdset, 0, 0, timeout);
+	err = select(comm->srv_sock+1, &fdset, 0, 0, timeout);
 
 	if ( err == -1 ) {
 		// error
