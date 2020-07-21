@@ -9,5 +9,6 @@
 #define STD_E_NOENT		5U
 #define STD_E_LIMIT		6U
 #define STD_E_PERM		7U
+#define STD_E_TIMEOUT   8U
 
 #endif /* _STD_ERRNO_H_ */

@@ -15,6 +15,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
 
 #define target_os_api_sleep(arg) usleep((arg)*1000)
 #define winsock_init()
