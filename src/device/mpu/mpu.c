@@ -3,8 +3,13 @@
 #include "mpu_ops.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#ifdef OS_LINUX
+#include <dlfcn.h>
+#endif /* OS_LINUX */
 #include "assert.h"
 #include "mpu_malloc.h"
+#include "athrill_device.h"
 
 static Std_ReturnType memory_get_data8(MpuAddressRegionType *region, CoreIdType core_id, uint32 addr, uint8 *data);
 static Std_ReturnType memory_get_data16(MpuAddressRegionType *region, CoreIdType core_id, uint32 addr, uint16 *data);
@@ -196,6 +201,58 @@ uint8 *mpu_address_set_rom_ram(MpuAddressGetType getType, uint32 addr, uint32 si
 		return region->data;
 	}
 }
+#ifdef OS_LINUX
+#include "cpu.h"
+#include "athrill_exdev.h"
+uint8 *mpu_address_set_dev(uint32 addr, uint32 size, void *handler)
+{
+	MpuAddressRegionType *region = NULL;
+
+	region = mpu_address_search_region(addr, size);
+	if (region != NULL) {
+		printf("ERROR: addr=0x%x size=%u already found existing region(soff=0x%x size=%u)\n",
+				addr, size, region->start, region->size);
+		return NULL;
+	}
+	AthrillExDeviceType *exdev = dlsym(handler, "athrill_ex_device");
+	if (exdev->devinit == NULL) {
+		printf("ERROR: addr=0x%x size=%u not found ex_device_init\n", addr, size);
+		return NULL;
+	}
+	if (exdev->supply_clock == NULL) {
+		printf("ERROR: addr=0x%x size=%u not found ex_device_supply_clock\n", addr, size);
+		return NULL;
+	}
+
+	if (exdev->ops == NULL) {
+		printf("INFO: addr=0x%x size=%u: default memory operation\n", addr, size);
+		exdev->ops = &default_memory_operation;
+	}
+	if (exdev->datap == NULL) {
+		printf("INFO: addr=0x%x size=%u: default memory\n", addr, size);
+		exdev->datap = malloc(size);
+		ASSERT(exdev->datap != NULL);
+		memset(exdev->datap, 0, size);
+	}
+
+	mpu_address_map.dynamic_map_num++;
+	mpu_address_map.dynamic_map = realloc(mpu_address_map.dynamic_map, (sizeof(MpuAddressRegionType)) * mpu_address_map.dynamic_map_num);
+	ASSERT(mpu_address_map.dynamic_map != NULL);
+	mpu_address_map.dynamic_map[mpu_address_map.dynamic_map_num -1].type = DEVICE;
+	mpu_address_map.dynamic_map[mpu_address_map.dynamic_map_num -1].start = addr;
+	mpu_address_map.dynamic_map[mpu_address_map.dynamic_map_num -1].size = size;
+	mpu_address_map.dynamic_map[mpu_address_map.dynamic_map_num -1].is_malloc = FALSE;
+
+	mpu_address_map.dynamic_map[mpu_address_map.dynamic_map_num -1].permission	= MPU_ADDRESS_REGION_PERM_ALL;
+	mpu_address_map.dynamic_map[mpu_address_map.dynamic_map_num -1].mask		= MPU_ADDRESS_REGION_MASK_ALL;
+	mpu_address_map.dynamic_map[mpu_address_map.dynamic_map_num -1].data		= (uint8*)exdev->datap;
+	mpu_address_map.dynamic_map[mpu_address_map.dynamic_map_num -1].ops			= exdev->ops;
+
+	device_add_athrill_exdev(exdev, &mpu_address_map.dynamic_map[mpu_address_map.dynamic_map_num -1]);
+	return mpu_address_map.dynamic_map[mpu_address_map.dynamic_map_num -1].data;
+}
+#endif /* OS_LINUX */
+
 void mpu_address_set_malloc_region(uint32 addr, uint32 size)
 {
 	MpuAddressRegionType *region = NULL;
@@ -206,7 +263,7 @@ void mpu_address_set_malloc_region(uint32 addr, uint32 size)
 	return;
 }
 
-MpuAddressRegionEnumType mpu_address_region_type_get(uint32 addr, bool *is_malloc)
+MpuAddressRegionEnumType mpu_address_region_type_get(uint32 addr, std_bool *is_malloc)
 {
 	uint32 i;
 

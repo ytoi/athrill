@@ -11,9 +11,10 @@ typedef unsigned short uint16;
 typedef unsigned int uint32;
 typedef unsigned long long uint64;
 typedef int	bool;
+typedef int std_bool;
+#define DEFINE_FLOAT_TYPEDEF
 typedef float float32;
 typedef double float64;
-
 
 typedef uint32 Std_ReturnType;
 
@@ -40,6 +41,8 @@ typedef uint32 CoreIdType;
 #ifdef __i386__
 #define CAST_UINT32_TO_ADDR(uint32_data) ( (void*)((uint32)(uint32_data)) )
 #elif __x86_64__
+#define CAST_UINT32_TO_ADDR(uint32_data) ( (void*)((uint64)(uint32_data)) )
+#elif __arm64
 #define CAST_UINT32_TO_ADDR(uint32_data) ( (void*)((uint64)(uint32_data)) )
 #else
 #error "unknown arch."

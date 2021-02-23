@@ -63,8 +63,7 @@ mRosReturnType mros_proc_tcpros_receive(mRosCommTcpClientType *client, mRosPacke
 		return ret;
 	}
 	packet->data_size = 0;
-	packet->total_size = res;
-	ret = mros_comm_tcp_client_receive_all(client, packet->data, packet->total_size, &res);
+	ret = mros_comm_tcp_client_receive_all(client, packet->data, res, &res);
 	if (ret != MROS_E_OK) {
 		ROS_ERROR("%s %s() %u ret=%d", __FILE__, __FUNCTION__, __LINE__, ret);
 		return ret;
@@ -137,7 +136,7 @@ static mRosReturnType mros_proc_slave_request_topic(mRosCommTcpClientType *clien
 		arg.argi[0] = MROS_PUBLISHER_PORT_NO;
 		arg.args_char = 2;
 		arg.argv[0] ="TCPROS";
-		arg.argv[1] = MROS_NODE_IPADDR;
+		arg.argv[1] = mros_node_ipaddr;
 		ret = mros_packet_encode(&arg, packet);
 		if (ret != MROS_E_OK) {
 			ROS_ERROR("%s %s() %u ret=%d", __FILE__, __FUNCTION__, __LINE__, ret);

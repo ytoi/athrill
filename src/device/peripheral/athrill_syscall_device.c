@@ -55,6 +55,7 @@ static void athrill_syscall_ev3_readdir(AthrillSyscallArgType *arg);
 static void athrill_syscall_ev3_closedir(AthrillSyscallArgType *arg);
 
 static void athrill_syscall_ev3_serial_open(AthrillSyscallArgType *arg);
+static void athrill_syscall_exit(AthrillSyscallArgType *arg);
 
 
 
@@ -89,6 +90,8 @@ static struct athrill_syscall_functable syscall_table[SYS_API_ID_NUM] = {
     { athrill_syscall_ev3_closedir },
 
     { athrill_syscall_ev3_serial_open },
+
+    { athrill_syscall_exit },
 };
 
 void athrill_syscall_device(uint32 addr)
@@ -498,7 +501,65 @@ static int create_directory(const char* dir)
     return ret;
 }
 
+#ifdef ENABLE_EXTERNAL_BT_SERIAL
+#include "serial_fifo.h"
+typedef struct {
+    int file_descriptor;
+    AthrillSerialFifoType   *fifo;
+} ExternalSerialFifoMapType;
+typedef enum {
+    ExternalSerialFifoId_0 = 0,
+    ExternalSerialFifoId_1,
+    ExternalSerialFifoId_NUM
+} ExternalSerialFifoIdType;
+static ExternalSerialFifoMapType external_serial_fifo_map[ExternalSerialFifoId_NUM];
+static AthrillSerialFifoType *get_serial_fifo(ExternalSerialFifoIdType id)
+{
+    AthrillSerialFifoType *fifop = NULL;
+    Std_ReturnType err;
+    uint32 scid;
+    if (id == ExternalSerialFifoId_0) {
+        err = cpuemu_get_devcfg_value("DEVICE_CONFIG_EV3_CH0_SERIAL_ID", (uint32*)&scid);
+    }
+    else if (id == ExternalSerialFifoId_1) {
+        err = cpuemu_get_devcfg_value("DEVICE_CONFIG_EV3_CH1_SERIAL_ID", (uint32*)&scid);
+    }
+    else {
+        return NULL;
+    }
+    if (err != STD_E_OK) {
+        return NULL;
+    }
+    athrill_device_get_serial_fifo_buffer(scid, &fifop);
+    return fifop;
+}
+static AthrillSerialFifoType *get_serial_fifo_from_fd(int fd)
+{
+    int i;
+    for (i = 0; i < ExternalSerialFifoId_NUM; i++) {
+        if (fd == external_serial_fifo_map[i].file_descriptor) {
+            return external_serial_fifo_map[i].fifo;
+        }
+    }
+    return NULL;
+}
 
+static std_bool athrill_ev3_serial_is_opened(ExternalSerialFifoIdType id)
+{
+    if (external_serial_fifo_map[id].file_descriptor > 0) {
+        return TRUE;
+    }
+    else {
+        return FALSE;
+    }
+}
+static void athrill_ev3_serial_set_fd(ExternalSerialFifoIdType id, int fd, AthrillSerialFifoType *fifop)
+{
+    external_serial_fifo_map[id].file_descriptor = fd;
+    external_serial_fifo_map[id].fifo = fifop;
+    return;
+}
+#endif /* ENABLE_EXTERNAL_BT_SERIAL */
 
 char *virtual_file_top = 0;
 static char *getVirtualFileName(const char *file_name, char *buf)
@@ -517,7 +578,7 @@ static char *getVirtualFileName(const char *file_name, char *buf)
 // T.B.D. assume fd is not used so much
 #define SPECIAL_FD_NUM (1024)
 static int special_fd_table[SPECIAL_FD_NUM] = {0};
-inline int get_correspond_fd(int fd)
+static inline int get_correspond_fd(int fd)
 {
 	ASSERT( 0<= fd && fd < SPECIAL_FD_NUM);
     if ( special_fd_table[fd] ) {
@@ -525,13 +586,13 @@ inline int get_correspond_fd(int fd)
     }
 	return fd;
 }
-inline int set_correspond_fd(int fd, int curresponding_fd)
+static inline int set_correspond_fd(int fd, int curresponding_fd)
 {
 	ASSERT( 0<= fd && fd < SPECIAL_FD_NUM);	
 	return special_fd_table[fd] = curresponding_fd;
 }
 
-inline int is_stream_fd(int fd)
+static inline int is_stream_fd(int fd)
 {
     return get_correspond_fd(fd) != fd;
 }
@@ -544,7 +605,7 @@ static void athrill_syscall_open_r(AthrillSyscallArgType *arg)
     char *file_name;
     int mode = arg->body.api_open_r.mode;
     char buf[255];
-    int flags = arg->body.api_open_r.flags;
+    int flags = athrill_syscall_open_r_flag(arg->body.api_open_r.flags);
     int fd;
 
     err = mpu_get_pointer(0U, arg->body.api_open_r.file_name,(uint8**)&file_name);
@@ -571,6 +632,21 @@ static void athrill_syscall_read_r(AthrillSyscallArgType *arg)
 		return;
     }
 
+#ifdef ENABLE_EXTERNAL_BT_SERIAL
+    AthrillSerialFifoType *fifop = get_serial_fifo_from_fd(fd);
+    if (fifop != NULL) {
+        arg->ret_value = 0;
+        arg->ret_errno = 0;
+    	mpthread_lock(fifop->rx_thread);
+        Std_ReturnType ret = comm_fifo_buffer_get(&fifop->rd, buf, size, (uint32*)&arg->ret_value);
+    	mpthread_unlock(fifop->rx_thread);
+        if (ret == STD_E_NOENT) {
+            arg->ret_value = -1;
+            arg->ret_errno = 0;
+        }
+        return;
+    }
+#endif /* ENABLE_EXTERNAL_BT_SERIAL */
     // if fd has corresponding fd(for write), it is stream
     int is_stream = is_stream_fd(fd);
 
@@ -608,7 +684,16 @@ static void athrill_syscall_write_r(AthrillSyscallArgType *arg)
 		return;
     }
 
-
+#ifdef ENABLE_EXTERNAL_BT_SERIAL
+    AthrillSerialFifoType *fifop = get_serial_fifo_from_fd(fd);
+    if (fifop != NULL) {
+        arg->ret_value = 0;
+    	mpthread_lock(fifop->tx_thread);
+        (void)comm_fifo_buffer_add(&fifop->wr, buf, size, (uint32*)&arg->ret_value);
+    	mpthread_unlock(fifop->tx_thread);
+        return;
+    }
+#endif /* ENABLE_EXTERNAL_BT_SERIAL */
 	int actual_fd = get_correspond_fd(fd);
 
     arg->ret_value = write(actual_fd, buf, size);
@@ -901,12 +986,29 @@ static int create_pipe_pair(const char *path)
 
 static void athrill_syscall_ev3_serial_open(AthrillSyscallArgType *arg)
 {
-    Std_ReturnType err;
     char *path_base;
-    char *path;
     int fd;
     sys_int32 port = arg->body.api_ev3_serial_open.port;
 
+#ifdef ENABLE_EXTERNAL_BT_SERIAL
+    int scid = 0;
+    AthrillSerialFifoType *fifop = NULL;
+
+    if ( port == SYS_SERIAL_UART ) {
+        scid = ExternalSerialFifoId_0;
+    } else if ( port == SYS_SERIAL_BT ) {
+        scid = ExternalSerialFifoId_1;
+    }
+    fifop = get_serial_fifo(scid);
+    if (fifop == NULL) {
+        arg->ret_value = -1;
+        return;
+    }
+    else if (athrill_ev3_serial_is_opened(scid) == TRUE) {
+        arg->ret_value = external_serial_fifo_map[scid].file_descriptor;
+        return;
+    }
+#endif /* ENABLE_EXTERNAL_BT_SERIAL */
     if ( port == SYS_SERIAL_DEFAULT ) {
         fd = 0;
     } else if ( port == SYS_SERIAL_UART ) {
@@ -917,14 +1019,31 @@ static void athrill_syscall_ev3_serial_open(AthrillSyscallArgType *arg)
         path_base ="__ev3rt_bt"; // BT Default name
         (void)cpuemu_get_devcfg_string("DEVICE_CONFIG_BT_BASENAME",&path_base);
         fd = create_pipe_pair(path_base);
-
     } else {
         fd = -1;
     }
- 
+#ifdef ENABLE_EXTERNAL_BT_SERIAL
+    if (fd > 0) {
+        athrill_ev3_serial_set_fd(scid, fd, fifop);
+    }
+#endif /* ENABLE_EXTERNAL_BT_SERIAL */
     arg->ret_value = fd;
 
     //printf("ev3_serial_open() port=%d fd=%d\n",port,fd);
     return;
 
+}
+
+static void athrill_syscall_exit(AthrillSyscallArgType *arg)
+{
+    sys_int32 status = arg->body.api_exit.status;
+    printf("athrill exit(%d)\n", status);
+    sync();
+    sync();
+    sync();
+    sync();
+    sync();
+    exit(status);
+    arg->ret_value = SYS_API_ERR_OK;
+    return;
 }

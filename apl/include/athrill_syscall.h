@@ -173,6 +173,9 @@ struct api_arg_ev3_serial_open {
     sys_int32 port;
 };
 
+struct api_arg_exit {
+	sys_int32 status;
+};
 
 typedef enum {
     SYS_API_ID_NONE = 0,
@@ -202,6 +205,7 @@ typedef enum {
     SYS_API_ID_EV3_READDIR,
     SYS_API_ID_EV3_CLOSEDIR,
     SYS_API_ID_EV3_SERIAL_OPEN,
+	SYS_API_ID_EXIT,
     SYS_API_ID_NUM,
 } AthrillSyscallApiIdType;
 
@@ -249,15 +253,77 @@ typedef struct {
         struct api_arg_ev3_readdir api_ev3_readdir;
         struct api_arg_ev3_closedir api_ev3_closedir;
         struct api_arg_ev3_serial_open api_ev3_serial_open;
-
+        struct api_arg_exit api_exit;
     } body;
 } AthrillSyscallArgType;
 
+#include <fcntl.h>
+
+#define ATHRILL_OPEN_FLAGS_O_APPEND		0x0001
+#define ATHRILL_OPEN_FLAGS_O_CREAT		0x0002
+#define ATHRILL_OPEN_FLAGS_O_EXCL		0x0004
+#define ATHRILL_OPEN_FLAGS_O_NOCTTY		0x0008
+#define ATHRILL_OPEN_FLAGS_O_NONBLOCK	0x0010
+#define ATHRILL_OPEN_FLAGS_O_SYNC		0x0020
+#define ATHRILL_OPEN_FLAGS_O_TRUNC		0x0040
+#define ATHRILL_OPEN_FLAGS_O_RDONLY		0x0080
+#define ATHRILL_OPEN_FLAGS_O_WRONLY		0x0100
+#define ATHRILL_OPEN_FLAGS_O_RDWR		0x0200
+
+#define ATHRILL_OPEN_R_FLAG_TARGET2INF(flag, org_flags, target_flag)   \
+do {    \
+		if ((org_flags) & (target_flag)) {	\
+			(flag) |= ATHRILL_OPEN_FLAGS_##target_flag;   \
+		}	\
+} while (0)
+
+#define ATHRILL_OPEN_R_FLAG_INF2TARGET(flag, inf_flags, target_flag)   \
+do {    \
+		if ((inf_flags) & ATHRILL_OPEN_FLAGS_##target_flag) {	\
+			(flag) |= (target_flag);   \
+		}	\
+} while (0)
+
+static inline int athrill_newlib_open_r_flag(int org_flags)
+{
+	int flags = 0x0;
+	ATHRILL_OPEN_R_FLAG_TARGET2INF(flags, org_flags, O_APPEND);
+	ATHRILL_OPEN_R_FLAG_TARGET2INF(flags, org_flags, O_CREAT);
+	ATHRILL_OPEN_R_FLAG_TARGET2INF(flags, org_flags, O_EXCL);
+	ATHRILL_OPEN_R_FLAG_TARGET2INF(flags, org_flags, O_NOCTTY);
+	ATHRILL_OPEN_R_FLAG_TARGET2INF(flags, org_flags, O_NONBLOCK);
+	ATHRILL_OPEN_R_FLAG_TARGET2INF(flags, org_flags, O_SYNC);
+	ATHRILL_OPEN_R_FLAG_TARGET2INF(flags, org_flags, O_TRUNC);
+	ATHRILL_OPEN_R_FLAG_TARGET2INF(flags, org_flags, O_RDONLY);
+	ATHRILL_OPEN_R_FLAG_TARGET2INF(flags, org_flags, O_WRONLY);
+	ATHRILL_OPEN_R_FLAG_TARGET2INF(flags, org_flags, O_RDWR);
+	return flags;
+}
+
+static inline int athrill_syscall_open_r_flag(int inf_flags)
+{
+	int flags = 0x0;
+	ATHRILL_OPEN_R_FLAG_INF2TARGET(flags, inf_flags, O_APPEND);
+	ATHRILL_OPEN_R_FLAG_INF2TARGET(flags, inf_flags, O_CREAT);
+	ATHRILL_OPEN_R_FLAG_INF2TARGET(flags, inf_flags, O_EXCL);
+	ATHRILL_OPEN_R_FLAG_INF2TARGET(flags, inf_flags, O_NOCTTY);
+	ATHRILL_OPEN_R_FLAG_INF2TARGET(flags, inf_flags, O_NONBLOCK);
+	ATHRILL_OPEN_R_FLAG_INF2TARGET(flags, inf_flags, O_SYNC);
+	ATHRILL_OPEN_R_FLAG_INF2TARGET(flags, inf_flags, O_TRUNC);
+	ATHRILL_OPEN_R_FLAG_INF2TARGET(flags, inf_flags, O_RDONLY);
+	ATHRILL_OPEN_R_FLAG_INF2TARGET(flags, inf_flags, O_WRONLY);
+	ATHRILL_OPEN_R_FLAG_INF2TARGET(flags, inf_flags, O_RDWR);
+	return flags;
+}
+
 #ifndef ATHRILL_SYSCALL_DEVICE
 
+#ifdef DISABLE_EV3RT_API
+#else
 #include "ev3api.h"
 #include "string.h"
 #include "driver_interface_filesys.h"
+#endif /* DISABLE_EV3RT_API */
 #include <errno.h>
 extern sys_addr athrill_device_func_call __attribute__ ((section(".athrill_device_section")));
 
@@ -507,7 +573,7 @@ static inline int athrill_newlib_open_r(const char *file, int flags, int mode)
     args.api_id = SYS_API_ID_OPEN_R;
     args.ret_value = -1;
     args.body.api_open_r.file_name = (sys_addr)file;
-    args.body.api_open_r.flags = flags;
+    args.body.api_open_r.flags = athrill_newlib_open_r_flag(flags);
     args.body.api_open_r.mode = mode;
 
     ATHRILL_SYSCALL(&args);
@@ -604,6 +670,8 @@ static inline sys_int32 athrill_ev3_opendir(sys_addr path)
 
 }
 
+#ifdef DISABLE_EV3RT_API
+#else
 static inline sys_int32 athrill_ev3_readdir(sys_int32 dirid, fatfs_filinfo_t *fileinfo)
 {
     volatile AthrillSyscallArgType args;
@@ -626,6 +694,7 @@ static inline sys_int32 athrill_ev3_readdir(sys_int32 dirid, fatfs_filinfo_t *fi
     return E_OK;
 
 }
+#endif
 
 static inline sys_int32 athrill_ev3_closedir(sys_int32 dirid)
 {
@@ -654,6 +723,17 @@ static inline sys_int32 athrill_ev3_serial_open(sys_int32 port)
 
     return args.ret_value;
 
+}
+static inline sys_int32 athrill_posix_exit(sys_int32 status)
+{
+    volatile AthrillSyscallArgType args;
+    args.api_id = SYS_API_ID_EXIT;
+    args.ret_value = SYS_API_ERR_INVAL;
+    args.body.api_exit.status = status;
+
+    ATHRILL_SYSCALL(&args);
+
+    return args.ret_value;
 }
 
 #endif /* ATHRILL_SYSCALL_DEVICE */

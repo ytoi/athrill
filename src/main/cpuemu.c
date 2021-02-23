@@ -25,12 +25,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "errno.h"
+#include <dlfcn.h>
 #endif /* OS_LINUX */
 #include "athrill_device.h"
 #include "assert.h"
+#include "athrill_exdev_header.h"
 
 static DeviceClockType cpuemu_dev_clock;
-bool cpuemu_is_cui_mode = FALSE;
+std_bool private_cpuemu_is_cui_mode = FALSE;
 static uint64 cpuemu_cpu_end_clock = -1LLU;
 static void cpuemu_env_parse_devcfg_string(TokenStringType* strp);
 
@@ -120,14 +122,14 @@ void cpuemu_init(void *(*cpu_run)(void *), void *opt)
 	cputhr_control_init();
 	cpuctrl_init();
 	if (cpu_run != NULL) {
-		cpuemu_is_cui_mode = TRUE;
+		private_cpuemu_is_cui_mode = TRUE;
 		for (i = 0; i < cpu_config_get_core_id_num(); i++) {
 			dbg_cpu_debug_mode_set(i, TRUE);
 		}
 		cputhr_control_start(cpu_run);
 	}
 	else {
-		cpuemu_is_cui_mode = FALSE;
+		private_cpuemu_is_cui_mode = FALSE;
 	}
 #ifdef OS_LINUX
 	device_init_athrill_device();
@@ -325,7 +327,7 @@ static inline bool cpuemu_thread_run_nodbg(int core_id_num)
 		/**
 		 * CPU 実行開始通知
 		 */
-		dbg_cpu_callback_start(cpu_get_pc(&virtual_cpu.cores[i].core), cpu_get_sp(&virtual_cpu.cores[i].core));
+		dbg_cpu_callback_start_nodbg(cpu_get_pc(&virtual_cpu.cores[i].core), cpu_get_sp(&virtual_cpu.cores[i].core));
 
 		err = cpu_supply_clock(i);
 		if ((err != STD_E_OK) && (cpu_illegal_access(i) == FALSE)) {
@@ -770,12 +772,14 @@ Std_ReturnType cpuemu_load_memmap(const char *path, MemoryAddressMapType *map)
 	Std_ReturnType err = STD_E_OK;
 	uint32 len;
 	bool ret;
-	MemoryAddressType *memp;
+	MemoryAddressType *memp = NULL;
 
 	map->ram_num = 0;
 	map->rom_num = 0;
+	map->dev_num = 0;
 	map->ram = NULL;
 	map->rom = NULL;
+	map->dev = NULL;
 
 	ret = token_string_set(&memcfg_file.filepath, path);
 	if (ret == FALSE) {
@@ -884,6 +888,35 @@ Std_ReturnType cpuemu_load_memmap(const char *path, MemoryAddressMapType *map)
 			}
 			analize_memmap_arguments(&memcfg_token_container, map, memp);
 			printf("MALLOC");
+		}
+		else if (!strcmp("DEV", (char*)memcfg_token_container.array[0].body.str.str)) {
+			char *filepath = (char*)memcfg_token_container.array[2].body.str.str;
+			void *handle = dlopen(filepath, RTLD_NOW);
+			if (handle == NULL) {
+				printf("ERROR: Can not find shared library %s reason=%s\n", filepath, dlerror());
+				continue;
+			}
+			AthrillExDeviceHeaderType *ext_dev_headr = dlsym(handle, "athrill_ex_device");
+			if (ext_dev_headr == NULL) {
+				printf("ERROR: Can not find symbol(athrill_ex_device) on %s\n", filepath);
+				continue;
+			}
+			if (ext_dev_headr->magicno != ATHRILL_EXTERNAL_DEVICE_MAGICNO) {
+				printf("ERROR: magicno is invalid(0x%x) on %s\n", ext_dev_headr->magicno, filepath);
+				continue;
+			}
+			if (ext_dev_headr->version != ATHRILL_EXTERNAL_DEVICE_VERSION) {
+				printf("ERROR: version is invalid(0x%x) on %s\n", ext_dev_headr->version, filepath);
+				continue;
+			}
+			map->dev_num++;
+			map->dev = realloc(map->dev, map->dev_num * sizeof(MemoryAddressType));
+			ASSERT(map->dev != NULL);
+			memp = &map->dev[map->dev_num - 1];
+			memp->type = MemoryAddressImplType_DEV;
+			memp->extdev_handle = handle;
+			memp->size = ext_dev_headr->memory_size;
+			printf("DEV");
 		}
 #endif /* OS_LINUX */
 		else {
